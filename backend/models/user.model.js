@@ -2,8 +2,7 @@ module.exports = (sequelize, DataTypes) => {
   const User = sequelize.define('User', {
     username: {
       type: DataTypes.STRING,
-      allowNull: true,
-      unique: true
+      allowNull: true
     },
     email: {
       type: DataTypes.STRING,
@@ -28,7 +27,13 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     timestamps: true,
     underscored: true,
-    tableName: 'users'
+    tableName: 'users',
+    indexes: [
+      {
+        unique: true,
+        fields: ['username']
+      }
+    ]
   });
 
   User.associate = (models) => {
