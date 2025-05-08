@@ -9,7 +9,13 @@
     "db:migrate": "sequelize db:migrate",
     "db:seed": "sequelize db:seed:all"
   },
-  "keywords": ["ecommerce", "api", "nodejs", "express", "sequelize"],
+  "keywords": [
+    "ecommerce",
+    "api",
+    "nodejs",
+    "express",
+    "sequelize"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -24,7 +30,7 @@
     "sequelize": "^6.31.0"
   },
   "devDependencies": {
-    "nodemon": "^2.0.22",
+    "nodemon": "^3.1.10",
     "sequelize-cli": "^6.6.0"
   }
 }
