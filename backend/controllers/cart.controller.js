@@ -4,8 +4,23 @@ const { Op } = require('sequelize');
 // Get user's cart
 const getCart = async (req, res) => {
   try {
-    let cart = await Cart.findOne({
+    console.log('Getting cart for user:', req.user.id);
+    
+    // Find or create cart for user
+    let [cart, created] = await Cart.findOrCreate({
       where: { userId: req.user.id },
+      defaults: {
+        userId: req.user.id
+      }
+    });
+
+    if (created) {
+      console.log('Created new cart for user:', cart.id);
+    }
+
+    // Fetch cart with items
+    cart = await Cart.findOne({
+      where: { id: cart.id },
       include: [{
         model: CartItem,
         as: 'items',
@@ -17,14 +32,19 @@ const getCart = async (req, res) => {
       }]
     });
 
-    if (!cart) {
-      cart = await Cart.create({ userId: req.user.id });
-    }
+    console.log('Cart found/created:', {
+      cartId: cart.id,
+      itemCount: cart.items ? cart.items.length : 0
+    });
 
     res.json(cart);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to fetch cart' });
+    console.error('Get cart error:', err);
+    res.status(500).json({ 
+      message: 'Failed to fetch cart',
+      code: 'GET_CART_FAILED',
+      error: err.message
+    });
   }
 };
 
@@ -32,21 +52,48 @@ const getCart = async (req, res) => {
 const addToCart = async (req, res) => {
   try {
     const { productId, quantity = 1 } = req.body;
+    console.log('Adding to cart:', { productId, quantity, userId: req.user.id });
+
+    // Validate input
+    if (!productId || quantity < 1) {
+      return res.status(400).json({ 
+        message: 'Invalid input',
+        code: 'INVALID_INPUT',
+        details: {
+          productId: !productId,
+          quantity: quantity < 1
+        }
+      });
+    }
 
     // Validate product
     const product = await Product.findByPk(productId);
     if (!product) {
-      return res.status(404).json({ message: 'Product not found' });
+      return res.status(404).json({ 
+        message: 'Product not found',
+        code: 'PRODUCT_NOT_FOUND'
+      });
     }
 
     if (!product.isAvailable || product.stockQuantity < quantity) {
-      return res.status(400).json({ message: 'Product is not available in the requested quantity' });
+      return res.status(400).json({ 
+        message: 'Product is not available in the requested quantity',
+        code: 'INSUFFICIENT_STOCK',
+        available: product.stockQuantity
+      });
     }
 
     // Get or create cart
-    let [cart] = await Cart.findOrCreate({
-      where: { userId: req.user.id }
+    let [cart, created] = await Cart.findOrCreate({
+      where: { userId: req.user.id },
+      defaults: {
+        userId: req.user.id
+      }
     });
+
+    if (created) {
+      console.log('Created new cart for user:', cart.id);
+    }
 
     // Check if item already exists in cart
     let cartItem = await CartItem.findOne({
@@ -60,10 +107,15 @@ const addToCart = async (req, res) => {
       // Update quantity
       const newQuantity = cartItem.quantity + quantity;
       if (newQuantity > product.stockQuantity) {
-        return res.status(400).json({ message: 'Requested quantity exceeds available stock' });
+        return res.status(400).json({ 
+          message: 'Requested quantity exceeds available stock',
+          code: 'INSUFFICIENT_STOCK',
+          available: product.stockQuantity
+        });
       }
 
       await cartItem.update({ quantity: newQuantity });
+      console.log('Updated existing cart item:', cartItem.id);
     } else {
       // Create new cart item
       cartItem = await CartItem.create({
@@ -71,6 +123,7 @@ const addToCart = async (req, res) => {
         productId,
         quantity
       });
+      console.log('Created new cart item:', cartItem.id);
     }
 
     // Log activity
@@ -82,13 +135,37 @@ const addToCart = async (req, res) => {
       details: { productId, quantity }
     });
 
+    // Fetch updated cart with items
+    const updatedCart = await Cart.findOne({
+      where: { id: cart.id },
+      include: [{
+        model: CartItem,
+        as: 'items',
+        include: [{
+          model: Product,
+          as: 'product',
+          attributes: ['id', 'name', 'price', 'imageUrl', 'stockQuantity', 'isAvailable']
+        }]
+      }]
+    });
+
+    console.log('Cart updated successfully:', {
+      cartId: updatedCart.id,
+      itemCount: updatedCart.items.length
+    });
+
     res.json({
       message: 'Item added to cart',
-      cartItem
+      code: 'ITEM_ADDED',
+      cart: updatedCart
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to add item to cart' });
+    console.error('Add to cart error:', err);
+    res.status(500).json({ 
+      message: 'Failed to add item to cart',
+      code: 'ADD_TO_CART_FAILED',
+      error: err.message
+    });
   }
 };
 
@@ -182,9 +259,13 @@ const clearCart = async (req, res) => {
     });
 
     if (!cart) {
-      return res.status(404).json({ message: 'Cart not found' });
+      return res.status(404).json({ 
+        message: 'Cart not found',
+        code: 'CART_NOT_FOUND'
+      });
     }
 
+    // Delete all cart items
     await CartItem.destroy({
       where: { cartId: cart.id }
     });
@@ -197,10 +278,17 @@ const clearCart = async (req, res) => {
       entityId: cart.id
     });
 
-    res.json({ message: 'Cart cleared successfully' });
+    res.json({ 
+      message: 'Cart cleared successfully',
+      code: 'CART_CLEARED'
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to clear cart' });
+    console.error('Clear cart error:', err);
+    res.status(500).json({ 
+      message: 'Failed to clear cart',
+      code: 'CLEAR_CART_FAILED',
+      error: err.message
+    });
   }
 };
 

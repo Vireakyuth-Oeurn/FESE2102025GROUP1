@@ -1,27 +1,26 @@
-const { Order, OrderItem, Cart, CartItem, Product, Address, ActivityLog } = require('../models');
+const { Order, OrderItem, Cart, CartItem, Product, Address, ActivityLog, User, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 // Get user's orders
 const getUserOrders = async (req, res) => {
   try {
+    const userId = req.user.id;
     const orders = await Order.findAll({
-      where: { userId: req.user.id },
-      include: [{
+      where: { userId },
+      include: [
+        {
         model: OrderItem,
-        as: 'items',
-        include: [{
-          model: Product,
-          as: 'product',
-          attributes: ['id', 'name', 'price', 'imageUrl']
-        }]
-      }],
+          include: [Product]
+        },
+        Address
+      ],
       order: [['createdAt', 'DESC']]
     });
 
     res.json(orders);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to fetch orders' });
+  } catch (error) {
+    console.error('Error fetching orders:', error);
+    res.status(500).json({ message: 'Error fetching orders', error: error.message });
   }
 };
 
@@ -58,10 +57,13 @@ const getOrderById = async (req, res) => {
   }
 };
 
-// Create new order from cart
+// Create new order
 const createOrder = async (req, res) => {
+  const transaction = await sequelize.transaction();
+  
   try {
-    const { addressId, paymentMethod } = req.body;
+    console.log('Order creation request body:', req.body);
+    const { paymentMethod, paymentInfo, shippingInfo } = req.body;
 
     // Get user's cart
     const cart = await Cart.findOne({
@@ -76,77 +78,119 @@ const createOrder = async (req, res) => {
       }]
     });
 
-    if (!cart || cart.items.length === 0) {
-      return res.status(400).json({ message: 'Cart is empty' });
+    if (!cart || !cart.items || cart.items.length === 0) {
+      return res.status(400).json({
+        message: 'Cart is empty',
+        code: 'EMPTY_CART'
+      });
     }
 
-    // Validate shipping address
-    const shippingAddress = await Address.findOne({
-      where: { 
-        id: addressId,
-        userId: req.user.id
-      }
-    });
+    // Create shipping address
+    const address = await Address.create({
+      userId: req.user.id,
+      name: shippingInfo.name,
+      addressLine1: shippingInfo.addressLine1,
+      addressLine2: shippingInfo.addressLine2,
+      city: shippingInfo.city,
+      state: shippingInfo.state,
+      postalCode: shippingInfo.postalCode,
+      country: shippingInfo.country,
+      phone: shippingInfo.phone,
+      isDefault: false
+    }, { transaction });
 
-    if (!shippingAddress) {
-      return res.status(404).json({ message: 'Shipping address not found' });
-    }
-
-    // Calculate total and validate stock
-    let total = 0;
-    for (const item of cart.items) {
-      if (!item.product.isAvailable || item.product.stockQuantity < item.quantity) {
-        return res.status(400).json({ 
-          message: `Product ${item.product.name} is not available in the requested quantity`
-        });
-      }
-      total += item.product.price * item.quantity;
-    }
+    // Calculate total
+    const totalAmount = cart.items.reduce((sum, item) => {
+      return sum + (item.product.price * item.quantity);
+    }, 0);
 
     // Create order
     const order = await Order.create({
       userId: req.user.id,
-      addressId,
+      addressId: address.id, // Link the address
+      totalAmount,
+      status: 'pending',
       paymentMethod,
-      totalAmount: total,
-      status: 'pending'
-    });
+      paymentInfo
+    }, { transaction });
 
-    // Create order items and update stock
-    for (const item of cart.items) {
-      await OrderItem.create({
+    // Create order items
+    const orderItems = await Promise.all(cart.items.map(item => {
+      return OrderItem.create({
         orderId: order.id,
-        productId: item.product.id,
+        productId: item.productId,
         quantity: item.quantity,
         price: item.product.price
-      });
+      }, { transaction });
+    }));
 
-      // Update product stock
-      await item.product.update({
-        stockQuantity: item.product.stockQuantity - item.quantity
-      });
-    }
+    // Update product stock
+    await Promise.all(cart.items.map(item => {
+      return Product.update(
+        { 
+          stockQuantity: item.product.stockQuantity - item.quantity 
+        },
+        { 
+          where: { id: item.productId },
+          transaction
+        }
+      );
+    }));
 
     // Clear cart
     await CartItem.destroy({
-      where: { cartId: cart.id }
+      where: { cartId: cart.id },
+      transaction
     });
+
+    await transaction.commit();
 
     // Log activity
     await ActivityLog.create({
       userId: req.user.id,
       action: 'create_order',
       entityType: 'order',
-      entityId: order.id
+      entityId: order.id,
+      details: { 
+        orderId: order.id,
+        totalAmount,
+        itemCount: orderItems.length
+      }
+    });
+
+    // Fetch complete order with items and address
+    const completeOrder = await Order.findOne({
+      where: { id: order.id },
+      include: [
+        {
+          model: OrderItem,
+          as: 'items',
+          include: [{
+            model: Product,
+            as: 'product',
+            attributes: ['id', 'name', 'price', 'imageUrl']
+          }]
+        },
+        {
+          model: Address,
+          as: 'address'
+        }
+      ]
     });
 
     res.status(201).json({
       message: 'Order created successfully',
-      order
+      code: 'ORDER_CREATED',
+      order: completeOrder
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to create order' });
+    await transaction.rollback();
+    console.error('Create order error:', err);
+    res.status(500).json({ 
+      message: 'Failed to create order',
+      code: 'ORDER_CREATION_FAILED',
+      error: err.message
+    });
   }
 };
 
@@ -207,10 +251,40 @@ const getAllOrders = async (req, res) => {
   }
 };
 
+// Get order details
+const getOrderDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const order = await Order.findOne({
+      where: { id, userId },
+      include: [
+        {
+          model: OrderItem,
+          include: [Product]
+        },
+        Address,
+        User
+      ]
+    });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    res.json(order);
+  } catch (error) {
+    console.error('Error fetching order details:', error);
+    res.status(500).json({ message: 'Error fetching order details', error: error.message });
+  }
+};
+
 module.exports = {
   getUserOrders,
   getOrderById,
   createOrder,
   updateOrderStatus,
-  getAllOrders
+  getAllOrders,
+  getOrderDetails
 }; 

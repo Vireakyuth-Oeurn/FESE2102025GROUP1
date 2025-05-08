@@ -4,91 +4,125 @@ const {
   Product, 
   Category, 
   ActivityLog,
-  sequelize 
+  sequelize,
+  OrderItem,
+  Profile
 } = require('../models');
 const { Op } = require('sequelize');
 
 // Get dashboard statistics
 const getDashboardStats = async (req, res) => {
   try {
-    const [
-      totalUsers,
-      totalOrders,
-      totalProducts,
-      totalRevenue,
-      recentOrders,
-      recentActivities
-    ] = await Promise.all([
-      User.count(),
-      Order.count(),
-      Product.count(),
-      Order.sum('total'),
-      Order.findAll({
-        limit: 5,
-        order: [['createdAt', 'DESC']],
+    const { startDate, endDate } = req.query;
+    const whereClause = {};
+    
+    if (startDate && endDate) {
+      whereClause.created_at = {
+        [Op.between]: [new Date(startDate), new Date(endDate)]
+      };
+    }
+
+    // Get total users and products
+    const totalUsers = await User.count();
+    const totalProducts = await Product.count();
+
+    // Get daily purchase data for chart
+    const dailyPurchases = await Order.findAll({
+      where: whereClause,
+      attributes: [
+        [sequelize.fn('DATE', sequelize.col('created_at')), 'date'],
+        [sequelize.fn('SUM', sequelize.col('totalAmount')), 'totalAmount']
+      ],
+      group: [sequelize.fn('DATE', sequelize.col('created_at'))],
+      order: [[sequelize.fn('DATE', sequelize.col('created_at')), 'ASC']]
+    });
+
+    // Get top 10 products by quantity
+    const topProducts = await OrderItem.findAll({
+      attributes: [
+        'productId',
+        [sequelize.fn('SUM', sequelize.col('quantity')), 'totalQuantity']
+      ],
+      include: [{
+        model: Product,
+        attributes: ['name', 'price']
+      }],
+      group: ['productId'],
+      order: [[sequelize.fn('SUM', sequelize.col('quantity')), 'DESC']],
+      limit: 10
+    });
+
+    // Get top 10 users by purchase amount
+    const topUsers = await Order.findAll({
+      where: whereClause,
+      attributes: [
+        'userId',
+        [sequelize.fn('SUM', sequelize.col('totalAmount')), 'totalSpent']
+      ],
         include: [{
           model: User,
-          attributes: ['id', 'name', 'email']
-        }]
-      }),
-      ActivityLog.findAll({
-        limit: 10,
-        order: [['createdAt', 'DESC']],
+        attributes: ['email'],
         include: [{
-          model: User,
-          attributes: ['id', 'name', 'email']
+          model: Profile,
+          attributes: ['firstName', 'lastName']
         }]
-      })
-    ]);
+      }],
+      group: ['userId'],
+      order: [[sequelize.fn('SUM', sequelize.col('totalAmount')), 'DESC']],
+      limit: 10
+    });
 
     res.json({
-      stats: {
         totalUsers,
-        totalOrders,
         totalProducts,
-        totalRevenue: totalRevenue || 0
-      },
-      recentOrders,
-      recentActivities
+      dailyPurchases,
+      topProducts,
+      topUsers
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to fetch dashboard statistics' });
+  } catch (error) {
+    console.error('Dashboard stats error:', error);
+    res.status(500).json({ message: 'Error fetching dashboard statistics' });
   }
 };
 
 // User management
 const getAllUsers = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = (page - 1) * limit;
+    const { search } = req.query;
+    const whereClause = {};
+    
+    if (search) {
+      whereClause[Op.or] = [
+        { email: { [Op.like]: `%${search}%` } },
+        { '$profile.firstName$': { [Op.like]: `%${search}%` } },
+        { '$profile.lastName$': { [Op.like]: `%${search}%` } },
+        { '$profile.phone$': { [Op.like]: `%${search}%` } }
+      ];
+    }
 
-    const { count, rows: users } = await User.findAndCountAll({
-      attributes: { exclude: ['password'] },
-      limit,
-      offset,
-      order: [['createdAt', 'DESC']]
+    const users = await User.findAll({
+      where: whereClause,
+      include: [{
+        model: Profile,
+        as: 'profile'
+      }],
+      attributes: { exclude: ['password'] }
     });
 
-    res.json({
-      users,
-      pagination: {
-        total: count,
-        page,
-        pages: Math.ceil(count / limit),
-        limit
-      }
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to fetch users' });
+    res.json(users);
+  } catch (error) {
+    console.error('Get all users error:', error);
+    res.status(500).json({ message: 'Error fetching users' });
   }
 };
 
 const getUserById = async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id, {
+      include: [{
+        model: Profile,
+        as: 'profile'
+      }],
       attributes: { exclude: ['password'] }
     });
 
@@ -97,69 +131,56 @@ const getUserById = async (req, res) => {
     }
 
     res.json(user);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to fetch user' });
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({ message: 'Error fetching user' });
   }
 };
 
 const updateUser = async (req, res) => {
   try {
-    const { name, email, role } = req.body;
-    const user = await User.findByPk(req.params.id);
+    const { id } = req.params;
+    const { email, role, isActive, profile } = req.body;
 
+    const user = await User.findByPk(id);
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    await user.update({ name, email, role });
-
-    // Log activity
-    await ActivityLog.create({
-      userId: req.user.id,
-      action: 'update_user',
-      entityType: 'user',
-      entityId: user.id,
-      details: { name, email, role }
+    // Update user
+    await user.update({
+      email,
+      role,
+      isActive
     });
 
-    res.json({
-      message: 'User updated successfully',
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to update user' });
+    // Update profile
+    if (profile) {
+      const [userProfile] = await Profile.findOrCreate({
+        where: { userId: id }
+      });
+      await userProfile.update(profile);
+    }
+
+    res.json({ message: 'User updated successfully' });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ message: 'Error updating user' });
   }
 };
 
 const deleteUser = async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id);
-
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
     await user.destroy();
-
-    // Log activity
-    await ActivityLog.create({
-      userId: req.user.id,
-      action: 'delete_user',
-      entityType: 'user',
-      entityId: req.params.id
-    });
-
     res.json({ message: 'User deleted successfully' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to delete user' });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ message: 'Error deleting user' });
   }
 };
 
@@ -255,75 +276,40 @@ const updateOrderStatus = async (req, res) => {
 const createProduct = async (req, res) => {
   try {
     const product = await Product.create(req.body);
-
-    // Log activity
-    await ActivityLog.create({
-      userId: req.user.id,
-      action: 'create_product',
-      entityType: 'product',
-      entityId: product.id
-    });
-
-    res.status(201).json({
-      message: 'Product created successfully',
-      product
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to create product' });
+    res.status(201).json(product);
+  } catch (error) {
+    console.error('Create product error:', error);
+    res.status(500).json({ message: 'Error creating product' });
   }
 };
 
 const updateProduct = async (req, res) => {
   try {
     const product = await Product.findByPk(req.params.id);
-
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
 
     await product.update(req.body);
-
-    // Log activity
-    await ActivityLog.create({
-      userId: req.user.id,
-      action: 'update_product',
-      entityType: 'product',
-      entityId: product.id
-    });
-
-    res.json({
-      message: 'Product updated successfully',
-      product
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to update product' });
+    res.json(product);
+  } catch (error) {
+    console.error('Update product error:', error);
+    res.status(500).json({ message: 'Error updating product' });
   }
 };
 
 const deleteProduct = async (req, res) => {
   try {
     const product = await Product.findByPk(req.params.id);
-
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
 
     await product.destroy();
-
-    // Log activity
-    await ActivityLog.create({
-      userId: req.user.id,
-      action: 'delete_product',
-      entityType: 'product',
-      entityId: req.params.id
-    });
-
     res.json({ message: 'Product deleted successfully' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to delete product' });
+  } catch (error) {
+    console.error('Delete product error:', error);
+    res.status(500).json({ message: 'Error deleting product' });
   }
 };
 

@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const helmet = require('helmet');
+const path = require('path');
 
 const app = express();
 
@@ -9,15 +10,45 @@ const app = express();
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
     ? process.env.FRONTEND_URL 
-    : 'http://localhost:3000',
-  credentials: true
+    : ['http://localhost:3000', 'http://localhost:5000'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
 
 // Middleware
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "blob:", "*"],
+      connectSrc: ["'self'", "http://localhost:3000", "http://localhost:5000"]
+    }
+  }
+}));
 app.use(morgan('dev'));
-app.use(express.json());
+
+// Body parser middleware with better error handling
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.path === '/api/auth/logout') {
+    // Skip body parsing for logout endpoint
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
 app.use(express.urlencoded({ extended: true }));
+
+// Serve static files with proper headers
+app.use('/images', express.static(path.join(__dirname, 'public/images'), {
+  setHeaders: (res, path, stat) => {
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.set('Access-Control-Allow-Origin', '*');
+  }
+}));
 
 // Import routes
 const authRoutes = require('./routes/auth.routes');
@@ -47,7 +78,16 @@ app.get('/', (req, res) => {
 // Error handling
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ message: 'Something went wrong!' });
+  if (err.message === 'Invalid JSON') {
+    return res.status(400).json({ 
+      message: 'Invalid JSON',
+      code: 'INVALID_JSON'
+    });
+  }
+  res.status(500).json({ 
+    message: 'Something went wrong!',
+    code: 'SERVER_ERROR'
+  });
 });
 
 module.exports = app; 

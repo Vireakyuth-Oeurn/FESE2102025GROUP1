@@ -89,16 +89,16 @@ const login = async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    // Check if user is active
-    if (!user.isActive) {
+    // Check if user is active (only if explicitly set to false)
+    if (user.isActive === false) {
       return res.status(403).json({ message: 'Account is deactivated' });
     }
 
     // Generate JWT token
     const token = jwt.sign(
-      { userId: user.id, role: user.role },
+      { id: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: '24h' }
     );
 
     // Log activity
@@ -152,8 +152,50 @@ const resetPassword = async (req, res) => {
   }
 };
 
+const logout = async (req, res) => {
+  try {
+    // Check if user exists in request
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({
+        message: 'Not authenticated',
+        code: 'NOT_AUTHENTICATED'
+      });
+    }
+
+    // Log activity
+    try {
+      await ActivityLog.create({
+        userId: req.user.id,
+        action: 'logout',
+        entityType: 'user',
+        entityId: req.user.id
+      });
+    } catch (logError) {
+      console.error('Failed to log logout activity:', logError);
+      // Continue with logout even if logging fails
+    }
+
+    // Clear any session data
+    res.clearCookie('token');
+    
+    // Send success response
+    res.status(200).json({ 
+      message: 'Logged out successfully',
+      code: 'LOGOUT_SUCCESS'
+    });
+  } catch (err) {
+    console.error('Logout error:', err);
+    res.status(500).json({ 
+      message: 'Logout failed',
+      code: 'LOGOUT_FAILED',
+      error: err.message 
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
-  resetPassword
+  resetPassword,
+  logout
 }; 
