@@ -6,6 +6,9 @@ const authMiddleware = require('../middleware/auth.middleware');
 // Apply auth middleware to all routes
 router.use(authMiddleware);
 
+// Get current user
+router.get('/me', userController.getCurrentUser);
+
 // Profile routes
 router.get('/profile', userController.getProfile);
 router.put('/profile', userController.updateProfile);

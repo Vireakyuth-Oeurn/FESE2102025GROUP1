@@ -15,6 +15,14 @@ module.exports = (sequelize, DataTypes) => {
     avatar: {
       type: DataTypes.STRING,
       allowNull: true
+    },
+    dateOfBirth: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    gender: {
+      type: DataTypes.ENUM('male', 'female', 'other'),
+      allowNull: true
     }
   }, {
     timestamps: true,

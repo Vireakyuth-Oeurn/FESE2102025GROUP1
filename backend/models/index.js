@@ -38,4 +38,16 @@ Object.keys(db).forEach(modelName => {
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 
+// Sync all models with database
+sequelize.sync({ 
+  force: false,
+  alter: false
+})
+  .then(() => {
+    console.log('Database synchronized successfully');
+  })
+  .catch((error) => {
+    console.error('Error synchronizing database:', error);
+  });
+
 module.exports = db; 
